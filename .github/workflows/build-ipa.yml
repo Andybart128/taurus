@@ -45,7 +45,35 @@ jobs:
           curl -fsSL "${{ inputs.ipa_url }}" -o ipa/spotify.ipa
           case "$(file --mime-type -b ipa/spotify.ipa)" in application/zip|application/x-ios-app) ;; *) echo "::error::Not an IPA"; exit 1 ;; esac
 
-      - run: make release
+      - name: Build with Theos
+        run: |
+          set -euo pipefail
+          echo "Working dir: $(pwd)"
+          ls -la
+
+          MF=$(find . -maxdepth 4 -type f -name Makefile -print -quit || true)
+
+          if [ -z "$MF" ]; then
+            echo "::error::No Makefile found in the repository. Ensure your Theos project is in the repo or update the workflow to point to the correct subdirectory."
+            exit 1
+          fi
+
+          MDIR=$(dirname "$MF")
+          echo "Found Makefile at $MF, running 'make release' in $MDIR"
+          cd "$MDIR"
+
+          if make -n release >/dev/null 2>&1; then
+            make release
+          else
+            echo "::warning::'release' target not found, attempting 'package' fallback and showing diagnostics."
+            sed -n '1,200p' Makefile || true
+            if make -n package >/dev/null 2>&1; then
+              make package
+            else
+              echo "::error::No suitable build target found (neither 'release' nor 'package'). Update the Makefile or the workflow."
+              exit 1
+            fi
+          fi
 
       - uses: actions/upload-artifact@v5
         if: inputs.upload_method != 'filebin'
