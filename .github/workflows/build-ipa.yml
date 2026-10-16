@@ -7,6 +7,11 @@ on:
         description: "Direct link to a decrypted Spotify IPA"
         required: true
         type: string
+      project_path:
+        description: "Path to the directory that contains your Makefile (relative to repo root)"
+        required: false
+        default: "."
+        type: string
       upload_method:
         description: "Where to put the result"
         default: artifacts
@@ -26,7 +31,7 @@ jobs:
 
       - uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: latest-stable
+          xcode-version: '15.2.1'
 
       - uses: actions/checkout@v5
         with:
@@ -51,10 +56,11 @@ jobs:
           echo "Working dir: $(pwd)"
           ls -la
 
-          MF=$(find . -maxdepth 4 -type f -name Makefile -print -quit || true)
+          SEARCH_ROOT="${{ inputs.project_path || '.' }}"
+          MF=$(find "$SEARCH_ROOT" -maxdepth 8 -type f -name Makefile -print -quit || true)
 
           if [ -z "$MF" ]; then
-            echo "::error::No Makefile found in the repository. Ensure your Theos project is in the repo or update the workflow to point to the correct subdirectory."
+            echo "::error::No Makefile found in '$SEARCH_ROOT'. Ensure your Theos project is in the repo or update workflow input 'project_path'."
             exit 1
           fi
 
@@ -62,17 +68,27 @@ jobs:
           echo "Found Makefile at $MF, running 'make release' in $MDIR"
           cd "$MDIR"
 
+          mkdir -p "$GITHUB_WORKSPACE/build-logs"
+          make_ret=0
+
           if make -n release >/dev/null 2>&1; then
-            make release
+            make release CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=YES 2>&1 | tee "$GITHUB_WORKSPACE/build-logs/make-release.log"
+            make_ret=${PIPESTATUS[0]}
           else
             echo "::warning::'release' target not found, attempting 'package' fallback and showing diagnostics."
             sed -n '1,200p' Makefile || true
             if make -n package >/dev/null 2>&1; then
-              make package
+              make package CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=YES 2>&1 | tee "$GITHUB_WORKSPACE/build-logs/make-package.log"
+              make_ret=${PIPESTATUS[0]}
             else
               echo "::error::No suitable build target found (neither 'release' nor 'package'). Update the Makefile or the workflow."
               exit 1
             fi
+          fi
+
+          if [ "$make_ret" -ne 0 ]; then
+            echo "::error::Make failed, see build-logs/ for details"
+            exit "$make_ret"
           fi
 
       - uses: actions/upload-artifact@v5
@@ -81,6 +97,14 @@ jobs:
           name: spoti.ipa
           path: out/*.ipa
           if-no-files-found: error
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: build-logs
+          path: build-logs/*
+          if-no-files-found: ignore
 
       - name: Upload to filebin.net
         if: inputs.upload_method != 'artifacts'
